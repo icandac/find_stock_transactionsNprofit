@@ -1,76 +1,173 @@
-# Python libraries
-import os
-from pathlib import Path
-
-# Third-party packages
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
+from tqdm import tqdm as tqdm_func
 
-# Internal modules
+import src.functions as func
 from src.utils import add_to_log
-from src.functions import load_csv, greedy_algorithm, simulated_annealing
 
 
 def main():
     """
-    This model...
+    Analyze the trades dataset to identify and evaluate the most profitable trades
+    using the simulated annealing algorithm. This function also visualizes the analysis results.
+
+    Returns:
+    None
     """
-    # Read the input file
-    df_input = load_csv()
-    df = df_input.copy()
+    # Load the dataset
+    file_path = './input/data_v2.csv'
+    df = pd.read_csv(file_path)
 
-    # Clean and sort the data
-    print(df.isna().sum())  # No NaN values in the dataset
-    print(df.isnull().sum())  # No null values in the dataset
+    # Calculate the cumulative position over time
+    df['Cumulative_Position'] = df['Quantity'].cumsum()
 
-    df.describe().to_csv(path_or_buf="./outputs/data_summary.csv", sep=",", columns=df.columns)
+    # Add a column to mark potential trades for the ideal strategy
+    # A trade is marked as potential if the absolute cumulative position does not exceed 100,000
+    df['Potential_Trade'] = df['Cumulative_Position'].apply(lambda x: abs(x) <= 100000)
 
-    add_to_log("The given data is read and cleaned.")
+    # Show some rows where Potential_Trade is True
+    print(df[df['Potential_Trade']].head())
 
-    # Analysis and calculation
-    # We assume the initial position of the "ideal trader(s)" is zero.
+    add_to_log("The dataset is successfully get.")
 
-    # Since we checked and saw that there are positions quite large, let's first filter the dataset
-    # by removing the positions exceeding 200000, since they always make the position larger than
-    # 100000 or less than -100000.
-    filtered_df = df[abs(df['Quantity']) <= 200000]
+    # # Create all combinations of parameters for grid search
+    # # This takes time but for the first run, it will make choose the correct set of parameters.
+    # best_profit_grid, best_parameters_grid = func.simulated_annealing_w_parameter_search(df)
 
-    # Multiply the positions with -1 since actually sells, i.e. negative positions, cumulatively
-    # effect the PnL and we are going to optimize the PnL.
-    filtered_df.loc[:, 'Quantity'] = filtered_df['Quantity'] * -1
-
-    # Assume the "ideal strategy" means a strategy that makes the owner earns the most PnL
-    filt_df = filtered_df.copy(deep=True)
-    # Apply greedy algortihm
-    # selected_trades, max_pnl = greedy_algorithm(filt_df)
-    # print(f"Selected trades indices: {selected_trades}")
-    # print(f"Number of selected trades: {len(selected_trades)}")
-    # print(f"Maximum PnL: {max_pnl}")
-
-    # Parameters for simulated annealing
+    # Initial parameters for simulated annealing
     initial_temp = 1000
     cooling_rate = 0.995
-    num_iterations = 10000
+    num_iterations = 1000
 
-    solution, max_pnl = simulated_annealing(filt_df, initial_temp, cooling_rate,
-                                            num_iterations)
-    selected_trade_indices = np.where(solution == 1)[0]
-    print(f"Number of selected trades indices: {len(selected_trade_indices)}")
-    print(f"Maximum PnL: {max_pnl}")
+    best_overall_trades = []
+    best_overall_profit = float('-inf')
 
-    # # Visualization
-    # # Plot all trades
-    # sns.scatterplot(data=filt_df, x=filt_df.index, y='Quantity', label='All Trades')
-    #
-    # # Overlay the "ideally" traded ones with red circles
-    # ideal_trades = filt_df.loc[selected_trades]
-    # sns.scatterplot(data=ideal_trades, x=ideal_trades.index, y='Quantity', color='red',
-    #                 label='Ideal Trades', s=50)
-    #
-    # plt.xlabel('Trade Index')
-    # plt.ylabel('Quantity')
-    # plt.title('All Trades vs. Ideal Trades')
-    # plt.legend()
-    # plt.show()
+    # This can be passed by just getting num_runs = 1 for a single pass algorithm but the more the
+    # number is increased, the more chance is get to obtain a higher profit
+    num_runs = 100
+    for _ in tqdm_func(range(num_runs), desc="Running Simulated Annealing"):
+        trades, profit = func.simulated_annealing(df, initial_temp, cooling_rate, num_iterations)
+        if profit > best_overall_profit:
+            best_overall_profit = profit
+            best_overall_trades = trades
+
+    print(best_overall_profit, best_overall_trades[:10])
+
+    # Extract the DataFrame for the best trades identified by simulated annealing
+    best_trades_df = df.loc[best_overall_trades]
+
+    # Show the first few rows of the DataFrame for the best trades
+    print(best_trades_df.head())
+
+    # Calculate the cumulative position for the best trades
+    best_trades_df['Best_Trades_Cumulative_Position'] = best_trades_df['Quantity'].cumsum()
+
+    # Calculate the overall profit for the best trades
+    overall_profit = func.calculate_profit(best_trades_df)
+
+    # Calculate the number of trades in the best set
+    num_trades = len(best_trades_df)
+
+    # Calculate the efficiency metric (Profit per Trade)
+    efficiency = overall_profit / num_trades if num_trades > 0 else 0
+
+    print(overall_profit, num_trades, efficiency)
+
+    add_to_log("The analysis is finished, now the visuals will take part.")
+
+    # Visualizations
+
+    # Plotting
+    plt.figure(figsize=(15, 6))
+    plt.plot(best_trades_df['time_id'], best_trades_df['Best_Trades_Cumulative_Position'],
+             marker='o', linestyle='-')
+    plt.axhline(100000, color='r', linestyle='--', label='Max Position Limit')
+    plt.axhline(-100000, color='r', linestyle='--', label='Min Position Limit')
+    plt.title('Cumulative Position of Best Trades')
+    plt.xlabel('Time ID')
+    plt.ylabel('Cumulative Position')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("./outputs/cumulative_positions.png", dpi=200, format='png', bbox_inches='tight')
+
+    # Calculate the profit for each individual trade
+    best_trades_df['Individual_Profit'] = best_trades_df['Quantity'] * best_trades_df['Price']
+
+    # Plotting the distribution of profits for individual trades
+    plt.figure(figsize=(15, 6))
+    plt.hist(best_trades_df['Individual_Profit'], bins=50, color='blue', alpha=0.7,
+             label='Individual Profit')
+    plt.axvline(best_trades_df['Individual_Profit'].mean(), color='r', linestyle='--',
+                label='Mean Profit')
+    plt.title('Distribution of Profits for Individual Trades')
+    plt.xlabel('Profit')
+    plt.ylabel('Frequency')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("./outputs/profit_dist.png", dpi=200, format='png', bbox_inches='tight')
+
+    # Calculate some statistics related to individual profits
+    mean_profit = best_trades_df['Individual_Profit'].mean()
+    median_profit = best_trades_df['Individual_Profit'].median()
+    std_dev_profit = best_trades_df['Individual_Profit'].std()
+
+    print(mean_profit, median_profit, std_dev_profit)
+
+    # Group the best trades by time ID and calculate the sum of profits and the number of trades
+    # for each time ID
+    time_analysis_df = best_trades_df.groupby('time_id')['Individual_Profit'].agg(
+        ['sum', 'count']).reset_index()
+
+    # Plotting
+    fig, axs = plt.subplots(2, 1, figsize=(15, 12))
+    fig.suptitle('Time Analysis of Best Trades')
+
+    # Plot total profit over time IDs using a line chart
+    axs[0].plot(time_analysis_df['time_id'], time_analysis_df['sum'], marker='o', color='blue',
+                alpha=0.7)
+    axs[0].set_title('Total Profit by Time ID')
+    axs[0].set_xlabel('Time ID')
+    axs[0].set_ylabel('Total Profit')
+    axs[0].grid(True)
+
+    # Adjust y-axis limits for better visualization
+    axs[0].set_ylim(min(time_analysis_df['sum']) * 1.1, max(time_analysis_df['sum']) * (- 1e4))
+
+    # Plot number of trades over time IDs using a line chart
+    axs[1].plot(time_analysis_df['time_id'], time_analysis_df['count'], marker='o', color='green',
+                alpha=0.7)
+    axs[1].set_title('Number of Trades by Time ID')
+    axs[1].set_xlabel('Time ID')
+    axs[1].set_ylabel('Number of Trades')
+    axs[1].grid(True)
+
+    # Adjust y-axis limits if needed
+    axs[1].set_ylim(min(time_analysis_df['count']) - 1, max(time_analysis_df['count']) + 1)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig("./outputs/trades_profits.png", dpi=200, format='png', bbox_inches='tight')
+
+    # Plotting
+    plt.figure(figsize=(15, 6))
+
+    # Calculate how often the strategy approaches the maximum position size of 100,000
+    approaching_max = best_trades_df[
+        abs(best_trades_df['Best_Trades_Cumulative_Position']) >= 90000]
+
+    # Use the index of approaching_max as x-values
+    approaching_indices = list(approaching_max.index)
+
+    # Highlight points where the position is near the maximum or minimum limit
+    plt.scatter(approaching_indices, list(approaching_max['Best_Trades_Cumulative_Position']),
+                color='red', label='Near Max Position')
+
+    # Lines to indicate the max and min position limits
+    plt.axhline(100000, color='r', linestyle='--', label='Max Position Limit')
+    plt.axhline(-100000, color='r', linestyle='--', label='Min Position Limit')
+
+    plt.title('Position Size Analysis of Best Trades')
+    plt.xlabel('Trade Sequence')
+    plt.ylabel('Cumulative Position')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("./outputs/position_size_analysis.png", dpi=200, format='png', bbox_inches='tight')
